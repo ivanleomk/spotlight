@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The app's identity: its name, ID, and the reasons shown in permission prompts.
+  Copied into Spotlight.app by scripts/dev-app.sh (for `make run`) and by
+  scripts/package.sh (for releases, which also fills in the version).
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key><string>com.ivanleomk.spotlight</string>
+    <key>CFBundleName</key><string>Spotlight</string>
+    <key>CFBundleDisplayName</key><string>Spotlight</string>
+    <key>CFBundleExecutable</key><string>Spotlight</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>dev</string>
+    <key>CFBundleVersion</key><string>dev</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><true/>
+    <key>NSDocumentsFolderUsageDescription</key><string>Spotlight indexes your Documents so you can search them.</string>
+    <key>NSDesktopFolderUsageDescription</key><string>Spotlight indexes your Desktop so you can search it.</string>
+    <key>NSDownloadsFolderUsageDescription</key><string>Spotlight indexes your Downloads so you can search them.</string>
+</dict>
+</plist>

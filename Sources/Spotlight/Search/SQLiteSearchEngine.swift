@@ -8,6 +8,8 @@ struct IndexedFile: Sendable {
     var size: Int64 = 0
     var modifiedAt: Double = 0
     var content: String = ""
+    // A short second line shown in results (see SearchResult.detail).
+    var detail: String = ""
     // The Source it came from (see Source.id).
     var source: String = LocalFilesSource.sourceID
 }
@@ -29,7 +31,12 @@ struct IndexStats: Sendable {
 // run inside it, so the (not thread-safe) database connection is never touched
 // from two threads at once. Callers reach it with `await`.
 actor SQLiteSearchEngine: SearchEngine {
-    private let db: SQLiteConnection
+    // Not private: the extensions in other files (schema, training log) use it too.
+    let db: SQLiteConnection
+    // The current time, replaceable so tests can pin "now" for recency ranking.
+    var now: @Sendable () -> Date = Date.init
+
+    func setClock(_ clock: @escaping @Sendable () -> Date) { now = clock }
 
     // Pass ":memory:" for a throwaway in-RAM database (used by tests).
     init(path: String) throws {
@@ -61,18 +68,18 @@ actor SQLiteSearchEngine: SearchEngine {
                 var id: Int64 = 0
                 try db.query(
                     """
-                    INSERT INTO documents(path, name, kind, size, modified_at, indexed_at, source)
-                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO documents(path, name, kind, size, modified_at, indexed_at, source, detail)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(path) DO UPDATE SET
                         name = excluded.name, kind = excluded.kind, size = excluded.size,
                         modified_at = excluded.modified_at, indexed_at = excluded.indexed_at,
-                        source = excluded.source
+                        source = excluded.source, detail = excluded.detail
                     RETURNING id
                     """,
                     [
                         .text(file.path), .text(file.name), .text(file.kind.rawValue),
                         .int(file.size), .double(file.modifiedAt), .double(indexedAt),
-                        .text(file.source),
+                        .text(file.source), .text(file.detail),
                     ]
                 ) { id = $0.int(0) }
 
@@ -83,7 +90,10 @@ actor SQLiteSearchEngine: SearchEngine {
                     "INSERT INTO documents_fts(rowid, name, path, content) VALUES(?, ?, ?, ?)",
                     [
                         .int(id), .text(SearchText.indexable(file.name)),
-                        .text(SearchText.indexable(file.path)), .text(file.content),
+                        // Web links (email, Drive) aren't searchable: their "words"
+                        // (mail, google, your own address) would match everything.
+                        .text(file.path.hasPrefix("https://") ? "" : SearchText.indexable(file.path)),
+                        .text(file.content),
                     ])
             }
         }
@@ -106,6 +116,44 @@ actor SQLiteSearchEngine: SearchEngine {
             try db.query("DELETE FROM documents_fts WHERE rowid IN (SELECT id FROM documents WHERE \(stale))", params)
             try db.query("DELETE FROM documents WHERE \(stale)", params)
         }
+    }
+
+    // Removes specific items, e.g. emails deleted in Gmail.
+    func remove(paths: [String]) throws {
+        try inTransaction {
+            for path in paths {
+                try db.query(
+                    "DELETE FROM documents_fts WHERE rowid IN (SELECT id FROM documents WHERE path = ?)",
+                    [.text(path)])
+                try db.query("DELETE FROM documents WHERE path = ?", [.text(path)])
+            }
+        }
+    }
+
+    // Removes a source's items that weren't stamped at or after `cutoff`: for
+    // sources that re-read everything each sync (Calendar), what's left
+    // unstamped was deleted or has moved out of the window we index.
+    func prune(source: String, olderThan cutoff: Double) throws {
+        let stale = "source = ? AND indexed_at < ?"
+        let params: [SQLiteValue] = [.text(source), .double(cutoff)]
+        try inTransaction {
+            try db.query("DELETE FROM documents_fts WHERE rowid IN (SELECT id FROM documents WHERE \(stale))", params)
+            try db.query("DELETE FROM documents WHERE \(stale)", params)
+        }
+    }
+
+    // Every path a source has indexed, so a sync that was interrupted can skip
+    // what it already fetched instead of downloading it again.
+    func paths(from source: String) throws -> Set<String> {
+        var paths = Set<String>()
+        try db.query("SELECT path FROM documents WHERE source = ?", [.text(source)]) { paths.insert($0.string(0)) }
+        return paths
+    }
+
+    func count(from source: String) throws -> Int {
+        var count = 0
+        try db.query("SELECT count(*) FROM documents WHERE source = ?", [.text(source)]) { count = Int($0.int(0)) }
+        return count
     }
 
     // Forgets everything one source added, e.g. when you disconnect an account.
@@ -198,7 +246,7 @@ actor SQLiteSearchEngine: SearchEngine {
 
     // Runs `body` as one all-or-nothing unit: if anything throws, nothing is kept.
     // Also far faster than one commit per file when writing thousands of rows.
-    private func inTransaction(_ body: () throws -> Void) throws {
+    func inTransaction(_ body: () throws -> Void) throws {
         try db.execute("BEGIN")
         do {
             try body()
@@ -222,7 +270,10 @@ actor SQLiteSearchEngine: SearchEngine {
             kindFilter = "AND d.kind IN (" + query.kinds.map { _ in "?" }.joined(separator: ", ") + ")"
             params += query.kinds.map { .text($0.rawValue) }
         }
-        params.append(.int(Int64(query.limit)))
+        // BM25 picks the best text matches, then Ranking reorders them by how
+        // recent they are. Fetching several times the limit gives the reordering
+        // room to promote a slightly weaker but much more recent match.
+        params.append(.int(Int64(query.limit * Ranking.candidateMultiplier)))
 
         var results: [SearchResult] = []
         try db.query(
@@ -230,7 +281,8 @@ actor SQLiteSearchEngine: SearchEngine {
             -- char(2) and char(3) are MatchMarker.start and .end.
             SELECT d.id, d.name, d.path, d.kind, -bm25(documents_fts, 10.0, 2.0, 1.0),
                    highlight(documents_fts, 0, char(2), char(3)),
-                   snippet(documents_fts, 2, char(2), char(3), '…', 12)
+                   snippet(documents_fts, 2, char(2), char(3), '…', 12),
+                   d.detail, d.modified_at
             FROM documents_fts JOIN documents d ON d.id = documents_fts.rowid
             WHERE documents_fts MATCH ? \(kindFilter)
             ORDER BY bm25(documents_fts, 10.0, 2.0, 1.0)
@@ -244,12 +296,16 @@ actor SQLiteSearchEngine: SearchEngine {
             // already visible in the name.
             let nameMatched = row.string(5).contains(MatchMarker.start)
             let snippet = row.string(6)
+            let detail = row.string(7)
+            let modified = row.double(8)
             results.append(
                 SearchResult(
                     id: String(row.int(0)), title: row.string(1), subtitle: row.string(2),
                     kind: DocumentKind(rawValue: row.string(3)) ?? .file, score: row.double(4),
+                    detail: detail.isEmpty ? nil : detail,
+                    date: modified > 0 ? Date(timeIntervalSince1970: modified) : nil,
                     snippet: !nameMatched && snippet.contains(MatchMarker.start) ? snippet : nil))
         }
-        return results
+        return Array(Ranking.rerank(results, now: now()).prefix(query.limit))
     }
 }

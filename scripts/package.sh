@@ -28,9 +28,10 @@ rm -rf "$DIST"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/Spotlight"
 
-# LSUIElement: no Dock icon or menu bar. The *UsageDescription strings are shown
-# in the permission prompts for the folders we crawl.
-cat > "$APP/Contents/Info.plist" <<PLIST
+# The same Info.plist the dev build embeds, with the release version filled in.
+cp Support/Info.plist "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">

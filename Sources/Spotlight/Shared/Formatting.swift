@@ -10,11 +10,21 @@ extension DocumentKind {
         case .app: "Application"
         case .folder: "Folder"
         case .file: "File"
+        case .email: "Email"
+        case .event: "Event"
+        case .driveFile: "Drive"
         }
     }
 
     // What Return does to a result of this kind, shown in the panel's footer.
-    var openActionName: String { "Open \(displayName)" }
+    var openActionName: String {
+        switch self {
+        case .email: "Open in Gmail"
+        case .event: "Open in Calendar"
+        case .driveFile: "Open in Drive"
+        default: "Open \(displayName)"
+        }
+    }
 
     // An SF Symbol to use when there's no real Finder icon.
     var symbolName: String {
@@ -22,7 +32,66 @@ extension DocumentKind {
         case .app: "app.dashed"
         case .folder: "folder"
         case .file: "doc"
+        case .email: "envelope.fill"
+        case .event: "calendar"
+        case .driveFile: "doc.richtext"
         }
+    }
+}
+
+extension DocumentKind {
+    // Things on this Mac (with a file path), as opposed to things from Google.
+    var isLocal: Bool { self == .file || self == .folder || self == .app }
+
+    var tint: Color {
+        switch self {
+        case .email: .blue
+        case .event: .red
+        case .driveFile: .green
+        default: .secondary
+        }
+    }
+}
+
+// The grey text after a result's name, by kind:
+//   file     ~/Documents/coding            (the folder it's in)
+//   email    Jane Doe · 3 days ago         (sender, when it arrived)
+//   event    Tue 30 Sep, 14:00 · Room 4    (when it starts, where)
+//   drive    You · 2 days ago              (owner, last edited or opened)
+enum ResultText {
+    static func secondary(for result: SearchResult, now: Date) -> String? {
+        switch result.kind {
+        case .app:
+            return nil
+        case .file, .folder:
+            return result.subtitle.map { PathDisplay.parentFolder(of: $0) }
+        case .email, .driveFile:
+            return join(result.detail, result.date.map { relative($0, now: now) })
+        case .event:
+            return join(result.date.map { eventTime($0, now: now) }, result.detail)
+        }
+    }
+
+    // "3 days ago", "in 2 hours"
+    static func relative(_ date: Date, now: Date) -> String {
+        date.formatted(.relative(presentation: .named, unitsStyle: .wide).locale(Locale(identifier: "en_US")))
+            .replacingOccurrences(of: "in 0 seconds", with: "now")
+    }
+
+    // "Tue 30 Sep, 14:00", with the year only when it isn't this year.
+    static func eventTime(_ date: Date, now: Date, calendar: Calendar = .current) -> String {
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+        let base = Date.FormatStyle(locale: Locale(identifier: "en_GB"), calendar: calendar, timeZone: calendar.timeZone)
+        // Day and time formatted separately: together, the formatter would write
+        // "Wed 30 Sep at 14:00".
+        var day = base.weekday(.abbreviated).day().month(.abbreviated)
+        if !sameYear { day = day.year() }
+        return date.formatted(day) + ", " + date.formatted(base.hour().minute())
+    }
+
+    private static func join(_ parts: String?...) -> String? {
+        let present = parts.compactMap { $0 }.filter { !$0.isEmpty }
+        return present.isEmpty ? nil : present.joined(separator: " · ")
     }
 }
 

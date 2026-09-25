@@ -12,8 +12,20 @@ struct SearchQuery: Sendable {
 // What sort of thing an indexed item is. An enum is a type with a fixed set of
 // cases; `: String` gives each case a text form ("file", "folder", "app") that
 // we store in the database.
-enum DocumentKind: String, Sendable {
+enum DocumentKind: String, Sendable, CaseIterable {
     case file, folder, app
+    // From Google: a Gmail message, a Calendar event, a Drive file.
+    case email, event
+    case driveFile = "drive_file"
+}
+
+extension SearchResult {
+    // Where Return takes you: a web page for Google items, a file otherwise.
+    var openURL: URL? {
+        guard let subtitle else { return nil }
+        if subtitle.hasPrefix("https://") { return URL(string: subtitle) }
+        return URL(fileURLWithPath: subtitle)
+    }
 }
 
 // One search hit. Identifiable = "has a stable `id`", which SwiftUI needs to
@@ -24,6 +36,12 @@ struct SearchResult: Identifiable, Sendable {
     var subtitle: String? = nil
     var kind: DocumentKind = .file
     var score: Double = 0
+    // A short second line from the source: an email's sender, an event's
+    // location, a Drive file's owner.
+    var detail: String? = nil
+    // When it happened: modified (files), received (email), starts (events),
+    // last edited or opened (Drive).
+    var date: Date? = nil
     // An excerpt of the file's content around the match, with each matched word
     // wrapped in \u{2}...\u{3}. Nil when the match was in the name or path.
     var snippet: String? = nil

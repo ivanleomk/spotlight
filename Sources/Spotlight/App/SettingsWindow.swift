@@ -4,10 +4,12 @@ import SwiftUI
 @MainActor
 final class SettingsWindow {
     private let engine: SQLiteSearchEngine
+    private let google: GoogleAccounts
     private var window: NSWindow?
 
-    init(engine: SQLiteSearchEngine) {
+    init(engine: SQLiteSearchEngine, google: GoogleAccounts) {
         self.engine = engine
+        self.google = google
     }
 
     func show() {
@@ -15,7 +17,7 @@ final class SettingsWindow {
         self.window = window
         // A fresh view each time, so the numbers are reloaded when you reopen it.
         window.contentViewController = NSHostingController(
-            rootView: SettingsView(engine: engine, folders: IndexedFolder.all))
+            rootView: SettingsView(engine: engine, folders: IndexedFolder.all, google: google))
         // Size it before centering: SwiftUI would otherwise size the window a moment
         // later, after we've centered a window of the wrong size.
         window.setContentSize(SettingsView.size)

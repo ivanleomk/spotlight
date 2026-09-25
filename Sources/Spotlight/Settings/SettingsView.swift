@@ -22,6 +22,7 @@ struct SettingsView: View {
 
     let engine: SQLiteSearchEngine
     let folders: [IndexedFolder]
+    let google: GoogleAccounts
 
     @State private var page = SettingsPage.general
     // Loaded once here and handed to both pages.
@@ -34,11 +35,19 @@ struct SettingsView: View {
             ScrollView {
                 Group {
                     switch page {
-                    case .general: GeneralPage(overview: overview)
+                    case .general:
+                        GeneralPage(
+                            overview: overview,
+                            exportTrainingData: { await exportTrainingData() },
+                            clearTrainingData: {
+                                try? await engine.clearSelections()
+                                overview.selectionCount = 0
+                            })
                     case .sources:
                         SourcesPage(
                             folders: folders, counts: overview.counts,
-                            lastSynced: overview.lastSynced[LocalFilesSource.sourceID])
+                            lastSynced: overview.lastSynced[LocalFilesSource.sourceID],
+                            google: google)
                     }
                 }
                 .padding(.horizontal, 40)
@@ -77,6 +86,20 @@ struct SettingsView: View {
     }
 }
 
+extension SettingsView {
+    // Asks where to save, then writes every example as JSON Lines.
+    func exportTrainingData() async {
+        guard let examples = try? await engine.trainingExamples(),
+            let data = try? TrainingExample.jsonLines(examples)
+        else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "spotlight-training-\(Date().formatted(.iso8601.year().month().day())).jsonl"
+        NSApp.activate()
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? data.write(to: url)
+    }
+}
+
 struct SidebarItem: View {
     let page: SettingsPage
     let isSelected: Bool
@@ -110,12 +133,15 @@ struct IndexOverview {
     var sizeInBytes: Int64 = 0
     // Source id -> when it last finished syncing.
     var lastSynced: [String: Date] = [:]
+    // How many times you've opened a result (each one is a training example).
+    var selectionCount = 0
 
     static func load(
         from engine: SQLiteSearchEngine, folders: [IndexedFolder], databasePath: String?
     ) async -> IndexOverview {
         var overview = IndexOverview()
         overview.stats = (try? await engine.stats()) ?? IndexStats()
+        overview.selectionCount = (try? await engine.selectionCount()) ?? 0
         if let state = try? await engine.syncState(for: LocalFilesSource.sourceID) {
             overview.lastSynced[LocalFilesSource.sourceID] = state.syncedAt
         }

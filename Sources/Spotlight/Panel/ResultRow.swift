@@ -11,13 +11,12 @@ struct ResultRow: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 10) {
                 icon
-                    .resizable()
                     .frame(width: 22, height: 22)
                 Text(item.title)
                     .font(.system(size: 14))
                     .layoutPriority(1)  // when space runs out, shorten the folder first
-                if item.kind != .app, let path = item.subtitle {
-                    Text(PathDisplay.parentFolder(of: path))
+                if let secondary = ResultText.secondary(for: item, now: Date()) {
+                    Text(secondary)
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         // Long paths lose their middle, keeping the start and the end.
@@ -45,11 +44,17 @@ struct ResultRow: View {
         )
     }
 
-    // The real Finder icon when we have a path, otherwise a symbol per kind.
-    private var icon: Image {
-        if let path = item.subtitle {
-            return Image(nsImage: NSWorkspace.shared.icon(forFile: path))
+    // The real Finder icon for things on this Mac; a tinted symbol for things
+    // from Google (they have web links, not files, so Finder has no icon).
+    @ViewBuilder private var icon: some View {
+        if item.kind.isLocal, let path = item.subtitle {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable()
+        } else {
+            Image(systemName: item.kind.symbolName)
+                .resizable()
+                .scaledToFit()
+                .padding(2)
+                .foregroundStyle(item.kind.tint)
         }
-        return Image(systemName: item.kind.symbolName)
     }
 }

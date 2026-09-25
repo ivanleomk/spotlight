@@ -18,7 +18,8 @@ build:  ## Compile the app (debug build, output goes in .build/)
 	swift build
 
 run: stop  ## Build and launch the app (Ctrl-C to quit). Press Cmd+Space to use it
-	swift run
+	scripts/dev-app.sh
+	.build/Spotlight.app/Contents/MacOS/Spotlight
 
 # Match our copies by path, not just by name: Apple's own Spotlight is also a
 # process called "Spotlight" (in /System/Library/CoreServices), and
@@ -26,8 +27,9 @@ run: stop  ## Build and launch the app (Ctrl-C to quit). Press Cmd+Space to use 
 stop:  ## Quit any running copy of the app
 	-@pkill -f '(\.build/.*|dist/Spotlight\.app/Contents/MacOS|^/Applications/Spotlight\.app/Contents/MacOS)/Spotlight$$'
 
-restart: stop build  ## Rebuild, then launch in the background
-	swift run &
+restart: stop  ## Rebuild, then launch in the background
+	scripts/dev-app.sh
+	.build/Spotlight.app/Contents/MacOS/Spotlight &
 
 test:  ## Run the unit tests in Tests/
 	swift test

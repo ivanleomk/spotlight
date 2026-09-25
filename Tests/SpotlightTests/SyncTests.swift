@@ -97,6 +97,32 @@ struct FakeSource: Source {
         #expect(try await engine.titles(for: "working") == ["working item"])
     }
 
+    // A source that only succeeds once another source has written its item,
+    // which can only happen if the two sync at the same time.
+    struct WaitsForOthers: Source {
+        let id = "slow"
+        var displayName: String { "Slow" }
+        struct GaveUp: Error {}
+
+        func sync(into index: SQLiteSearchEngine, since cursor: String?) async throws -> String? {
+            for _ in 0..<200 {
+                if try await index.count(from: "fast") > 0 { return nil }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            throw GaveUp()
+        }
+    }
+
+    @Test func aSlowSourceDoesNotHoldUpTheOthers() async throws {
+        let engine = try makeEngine()
+        // The slow one is first in the list: one-at-a-time syncing would make it give up.
+        let scheduler = SyncScheduler(index: engine, sources: [WaitsForOthers(), FakeSource(id: "fast")])
+
+        let errors = await scheduler.syncAll()
+
+        #expect(errors.isEmpty)
+    }
+
     @Test func itemsAreTaggedWithTheirSource() async throws {
         let engine = try makeEngine()
         await SyncScheduler(index: engine, sources: [FakeSource(id: "drive")]).syncAll()
@@ -124,8 +150,8 @@ struct FakeSource: Source {
         #expect(state.syncedAt >= before.addingTimeInterval(-1))
     }
 
-    @Test func settingsSubtitleMentionsTheLastSync() {
-        #expect(SourcesPage.subtitle(lastSynced: nil) == "Apps, files and folders on this Mac")
-        #expect(SourcesPage.subtitle(lastSynced: Date()).contains("· Synced"))
+    @Test func settingsShowsWhenItLastSynced() {
+        #expect(SourcesPage.syncedLabel(nil) == "Not synced yet")
+        #expect(SourcesPage.syncedLabel(Date()).hasPrefix("Synced "))
     }
 }
