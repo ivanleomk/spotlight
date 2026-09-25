@@ -11,7 +11,7 @@ final class SearchPanel: NSPanel {
         self.engine = engine
         super.init(
             // Tall enough for the bar plus the results; the empty area is transparent.
-            contentRect: NSRect(x: 0, y: 0, width: 850, height: 610),
+            contentRect: NSRect(x: 0, y: 0, width: 850, height: 680),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -89,7 +89,7 @@ struct SearchView: View {
         // edge is cut off, and a cut-off shadow shows up as a faint rectangle.
         .padding(50)
         // Pin everything to the top of the (taller, transparent) window.
-        .frame(width: 850, height: 610, alignment: .top)
+        .frame(width: 850, height: 680, alignment: .top)
         // Runs whenever `query` changes. SwiftUI cancels the previous run first,
         // so a slow search for "sa" can't overwrite the results for "saf".
         .task(id: query) {
@@ -193,28 +193,39 @@ struct ResultRow: View {
     let isSelected: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
-            icon
-                .resizable()
-                .frame(width: 22, height: 22)
-            Text(item.title)
-                .font(.system(size: 14))
-                .layoutPriority(1)  // when space runs out, shorten the folder first
-            if item.kind != .app, let folder {
-                Text(folder)
+        // Two lines when the match was inside the file: the usual row on top, and
+        // the matching text underneath, lined up with the name.
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 10) {
+                icon
+                    .resizable()
+                    .frame(width: 22, height: 22)
+                Text(item.title)
+                    .font(.system(size: 14))
+                    .layoutPriority(1)  // when space runs out, shorten the folder first
+                if item.kind != .app, let folder {
+                    Text(folder)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        // Long paths lose their middle, keeping the start and the end.
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 16)
+                Text(Self.label(for: item.kind))
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                    // Long paths lose their middle, keeping the start and the end.
-                    .truncationMode(.middle)
             }
-            Spacer(minLength: 16)
-            Text(Self.label(for: item.kind))
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+            if let snippet = item.snippet {
+                Text(Self.highlighted(snippet))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    // 22pt icon + 10pt gap, so the snippet starts under the name.
+                    .padding(.leading, 32)
+            }
         }
         .lineLimit(1)
         .padding(.horizontal, 8)
-        .frame(height: 40)
+        .frame(height: item.snippet == nil ? 40 : 54)
         .background(
             isSelected ? Color.primary.opacity(0.1) : Color.clear,
             in: RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -249,6 +260,29 @@ struct ResultRow: View {
         case .folder: "Folder"
         case .file: "File"
         }
+    }
+
+    // Turns "one \u{2}match\u{3} two" into styled text with "match" in bold.
+    // AttributedString is a string where each stretch of characters can carry
+    // its own styling (font, color, ...).
+    static func highlighted(_ snippet: String) -> AttributedString {
+        // Snippets can span lines; a one-line row wants them flattened.
+        let flat = snippet.replacing(/\s+/, with: " ")
+        var result = AttributedString()
+        // Split at each start marker. Every piece after the first begins with a match,
+        // which runs until the end marker.
+        for (index, piece) in flat.split(separator: "\u{2}", omittingEmptySubsequences: false).enumerated() {
+            guard index > 0, let end = piece.firstIndex(of: "\u{3}") else {
+                result += AttributedString(String(piece))
+                continue
+            }
+            var match = AttributedString(String(piece[..<end]))
+            match.font = .system(size: 12, weight: .semibold)
+            match.foregroundColor = .primary
+            result += match
+            result += AttributedString(String(piece[piece.index(after: end)...]))
+        }
+        return result
     }
 }
 

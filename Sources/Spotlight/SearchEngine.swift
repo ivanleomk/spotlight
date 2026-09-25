@@ -24,6 +24,9 @@ struct SearchResult: Identifiable, Sendable {
     var subtitle: String? = nil
     var kind: DocumentKind = .file
     var score: Double = 0
+    // An excerpt of the file's content around the match, with each matched word
+    // wrapped in \u{2}...\u{3}. Nil when the match was in the name or path.
+    var snippet: String? = nil
 }
 
 // A protocol is a contract: "anything that has these methods counts as a

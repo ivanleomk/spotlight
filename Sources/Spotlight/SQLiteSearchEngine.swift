@@ -82,18 +82,45 @@ actor SQLiteSearchEngine: SearchEngine {
     // Removes everything under `root` that wasn't stamped at or after `cutoff`,
     // i.e. files that existed at the last crawl but are gone now.
     func prune(under root: String, olderThan cutoff: Double) throws {
-        let prefix = root.hasSuffix("/") ? root : root + "/"
-        // substr(...) = prefix means "path starts with prefix". We avoid LIKE because
-        // `_` and `%` in real file names would be treated as wildcards.
-        let stale = "substr(path, 1, ?) = ? AND indexed_at < ?"
-        // SQLite counts Unicode code points, while Swift's `count` counts what you see
-        // as one letter ("é" can be two code points), so we count code points too.
-        let length = Int64(prefix.unicodeScalars.count)
-        let params: [SQLiteValue] = [.int(length), .text(prefix), .double(cutoff)]
+        let (under, underParams) = Self.pathIsUnder(root)
+        let stale = "\(under) AND indexed_at < ?"
+        let params = underParams + [.double(cutoff)]
         try inTransaction {
             try db.query("DELETE FROM documents_fts WHERE rowid IN (SELECT id FROM documents WHERE \(stale))", params)
             try db.query("DELETE FROM documents WHERE \(stale)", params)
         }
+    }
+
+    // Path -> modification date for everything already indexed under `root`.
+    // The crawler compares against this to skip re-reading files that haven't changed.
+    func modificationDates(under root: String) throws -> [String: Double] {
+        let (under, params) = Self.pathIsUnder(root)
+        var dates: [String: Double] = [:]
+        try db.query("SELECT path, modified_at FROM documents WHERE \(under)", params) { row in
+            dates[row.string(0)] = row.double(1)
+        }
+        return dates
+    }
+
+    // Marks files as "still there" without rewriting them, so `prune` keeps them.
+    func touch(_ paths: [String], indexedAt: Double) throws {
+        try inTransaction {
+            for path in paths {
+                try db.query(
+                    "UPDATE documents SET indexed_at = ? WHERE path = ?", [.double(indexedAt), .text(path)])
+            }
+        }
+    }
+
+    // SQL meaning "path is inside folder `root`", plus the values for its placeholders.
+    // substr(...) = prefix means "path starts with prefix". We avoid LIKE because
+    // `_` and `%` in real file names would be treated as wildcards.
+    private static func pathIsUnder(_ root: String) -> (String, [SQLiteValue]) {
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        // SQLite counts Unicode code points, while Swift's `count` counts what you see
+        // as one letter ("é" can be two code points), so we count code points too.
+        let length = Int64(prefix.unicodeScalars.count)
+        return ("substr(path, 1, ?) = ?", [.int(length), .text(prefix)])
     }
 
     // Runs `body` as one all-or-nothing unit: if anything throws, nothing is kept.
@@ -127,7 +154,9 @@ actor SQLiteSearchEngine: SearchEngine {
         var results: [SearchResult] = []
         try db.query(
             """
-            SELECT d.id, d.name, d.path, d.kind, -bm25(documents_fts, 10.0, 2.0, 1.0)
+            SELECT d.id, d.name, d.path, d.kind, -bm25(documents_fts, 10.0, 2.0, 1.0),
+                   highlight(documents_fts, 0, char(2), char(3)),
+                   snippet(documents_fts, 2, char(2), char(3), '…', 12)
             FROM documents_fts JOIN documents d ON d.id = documents_fts.rowid
             WHERE documents_fts MATCH ? \(kindFilter)
             ORDER BY bm25(documents_fts, 10.0, 2.0, 1.0)
@@ -135,10 +164,17 @@ actor SQLiteSearchEngine: SearchEngine {
             """,
             params
         ) { row in
+            // highlight() returns the name with matches wrapped in the invisible
+            // characters \u{2}...\u{3}; snippet() does the same for a short excerpt
+            // of the content. A snippet is only worth showing when the match is in
+            // the content and not already visible in the name.
+            let nameMatched = row.string(5).contains("\u{2}")
+            let snippet = row.string(6)
             results.append(
                 SearchResult(
                     id: String(row.int(0)), title: row.string(1), subtitle: row.string(2),
-                    kind: DocumentKind(rawValue: row.string(3)) ?? .file, score: row.double(4)))
+                    kind: DocumentKind(rawValue: row.string(3)) ?? .file, score: row.double(4),
+                    snippet: !nameMatched && snippet.contains("\u{2}") ? snippet : nil))
         }
         return results
     }
@@ -173,7 +209,7 @@ actor SQLiteSearchEngine: SearchEngine {
 
     // Bump this when the schema changes. SQLite keeps the number in the file itself
     // (PRAGMA user_version), so we can tell which version an existing database is.
-    private static let schemaVersion = 2
+    private static let schemaVersion = 4
 
     private static func migrate(_ db: SQLiteConnection) throws {
         var version: Int64 = 0
@@ -181,6 +217,7 @@ actor SQLiteSearchEngine: SearchEngine {
 
         if version < schemaVersion {
             // Old databases only held a throwaway index, so we rebuild from scratch.
+            // (v3: file contents are indexed. v4: but not inside /Applications.)
             // Once `searches` holds real history, future migrations must ALTER the
             // tables instead of dropping them.
             try db.execute(
@@ -190,6 +227,9 @@ actor SQLiteSearchEngine: SearchEngine {
                 DROP TABLE IF EXISTS documents_fts;
                 DROP TABLE IF EXISTS documents;
                 """)
+            // Dropping tables frees the space inside the file but doesn't shrink the
+            // file; VACUUM rewrites it at its real size.
+            try db.execute("VACUUM")
         }
         try db.execute(schema)
         try db.execute("PRAGMA user_version = \(schemaVersion)")

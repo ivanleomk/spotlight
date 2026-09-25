@@ -181,3 +181,69 @@ import Testing
         #expect(files.map(\.title) == ["safari-notes.md"])
     }
 }
+
+@Suite struct ContentIndexingTests {
+    private func makeFolder() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ContentTest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func write(_ text: String, to url: URL) throws {
+        try Data(text.utf8).write(to: url)
+    }
+
+    @Test func findsFilesByWhatIsInside() async throws {
+        let root = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("Quarterly budget for the zeppelin project", to: root.appendingPathComponent("plan.md"))
+        // macOS thinks .ts is video; we must still read it as TypeScript.
+        try write("export const zeppelinSpeed = 42", to: root.appendingPathComponent("speed.ts"))
+        let engine = try SQLiteSearchEngine(path: ":memory:")
+
+        await FileCrawler(roots: [root]).crawl(into: engine)
+        let results = try await engine.search(SearchQuery(text: "zeppelin"))
+
+        #expect(Set(results.map(\.title)) == ["plan.md", "speed.ts"])
+    }
+
+    @Test func snippetShowsOnlyWhenTheMatchIsInTheContent() async throws {
+        let engine = try SQLiteSearchEngine(path: ":memory:")
+        try await engine.upsert(path: "/a/notes.md", name: "notes.md", content: "buy oat milk")
+        try await engine.upsert(path: "/a/oat.md", name: "oat.md")
+
+        let results = try await engine.search(SearchQuery(text: "oat"))
+        let byTitle = Dictionary(uniqueKeysWithValues: results.map { ($0.title, $0) })
+
+        #expect(byTitle["notes.md"]?.snippet == "buy \u{2}oat\u{3} milk")
+        #expect(byTitle["oat.md"]?.snippet == nil)
+    }
+
+    @Test func recrawlRereadsChangedFilesOnly() async throws {
+        let root = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("todo.txt")
+        try write("alpha", to: file)
+        let engine = try SQLiteSearchEngine(path: ":memory:")
+        let crawler = FileCrawler(roots: [root])
+        await crawler.crawl(into: engine)
+
+        try write("bravo", to: file)
+        // Make sure the date really moves, even if both writes land in the same instant.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: file.path)
+        await crawler.crawl(into: engine)
+
+        #expect(try await engine.search(SearchQuery(text: "alpha")).isEmpty)
+        #expect(try await engine.search(SearchQuery(text: "bravo")).map(\.title) == ["todo.txt"])
+    }
+
+    @Test func highlightedMakesMatchesBold() {
+        let text = ResultRow.highlighted("buy \u{2}oat\u{3}\nmilk")
+
+        #expect(String(text.characters) == "buy oat milk")
+        let bold = text.runs.filter { $0.font != nil }.map { String(text[$0.range].characters) }
+        #expect(bold == ["oat"])
+    }
+}
