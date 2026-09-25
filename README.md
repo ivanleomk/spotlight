@@ -6,16 +6,26 @@ Goal: index items (files, notes, whatever) and search them with BM25 ranking.
 
 ## Status
 
-Just scaffolded — `swift package init --type executable`. Nothing built yet.
+- Global hotkey (Cmd+Space) shows a floating, translucent search bar.
+- No indexing or search yet.
 
-## Running
+Note: Cmd+Space is macOS Spotlight's shortcut. Disable it in System Settings >
+Keyboard > Keyboard Shortcuts > Spotlight so this app can receive it.
+
+## Commands
+
+Run `make help` to list them:
 
 ```
-swift run
+make run       # build and launch (Ctrl-C to quit)
+make stop      # quit a running copy
+make test      # run unit tests
+make clean     # delete build output
 ```
 
-## Testing
+## Layout
 
-```
-swift test
-```
+- `Package.swift`: project manifest (name, macOS version, targets)
+- `Sources/Spotlight/Spotlight.swift`: app entry point and AppDelegate
+- `Sources/Spotlight/HotKey.swift`: global shortcut via Carbon
+- `Sources/Spotlight/SearchPanel.swift`: floating window and SwiftUI search field

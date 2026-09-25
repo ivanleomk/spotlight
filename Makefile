@@ -1,0 +1,34 @@
+# A Makefile is a list of named shortcuts ("targets"). Run one with `make <name>`.
+# Each target has the form:
+#
+#   name:  ## description
+#   <TAB>command to run
+#
+# The command lines MUST start with a real tab character, not spaces.
+
+# Targets that are commands, not files. Without this, `make` would look for a
+# file called "build" and skip the command if one existed.
+.PHONY: help build run stop restart test clean
+
+# The default target: what runs when you type just `make`.
+help:  ## Show this list of commands
+	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-8s %s\n", $$1, $$2}'
+
+build:  ## Compile the app (debug build, output goes in .build/)
+	swift build
+
+run: stop  ## Build and launch the app (Ctrl-C to quit). Press Cmd+Space to use it
+	swift run
+
+stop:  ## Quit any running copy of the app
+	-pkill -x Spotlight
+
+restart: stop build  ## Rebuild, then launch in the background
+	swift run &
+
+test:  ## Run the unit tests in Tests/
+	swift test
+
+clean:  ## Delete build output (.build/); the next build starts fresh
+	swift package clean
+	rm -rf .build
