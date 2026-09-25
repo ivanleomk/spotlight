@@ -8,7 +8,7 @@
 
 # Targets that are commands, not files. Without this, `make` would look for a
 # file called "build" and skip the command if one existed.
-.PHONY: help build run stop restart test clean app
+.PHONY: help build run stop restart test clean app bench
 
 # The default target: what runs when you type just `make`.
 help:  ## Show this list of commands
@@ -33,6 +33,10 @@ restart: stop  ## Rebuild, then launch in the background
 
 test:  ## Run the unit tests in Tests/
 	swift test
+
+bench:  ## Time the search panel's search on your real index
+	scripts/dev-app.sh >/dev/null
+	.build/Spotlight.app/Contents/MacOS/Spotlight --bench t tr tri trip invoice "meeting notes"
 
 app:  ## Build a signed Spotlight.app + zip in dist/ (make app VERSION=0.1.0)
 	scripts/package.sh $(or $(VERSION),dev)

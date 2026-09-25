@@ -56,4 +56,16 @@ protocol SearchEngine: Sendable {
     // `async` = may take a while and suspend without blocking the UI.
     // `throws` = may fail (e.g. a database error).
     func search(_ query: SearchQuery) async throws -> [SearchResult]
+
+    // Several searches for the same text at once (the panel's sections), so
+    // an engine can rank the matches once instead of once per section.
+    func search(_ queries: [SearchQuery]) async throws -> [[SearchResult]]
+}
+
+extension SearchEngine {
+    func search(_ queries: [SearchQuery]) async throws -> [[SearchResult]] {
+        var results: [[SearchResult]] = []
+        for query in queries { results.append(try await search(query)) }
+        return results
+    }
 }

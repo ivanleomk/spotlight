@@ -48,7 +48,7 @@ struct ResultRow: View {
     // from Google (they have web links, not files, so Finder has no icon).
     @ViewBuilder private var icon: some View {
         if item.kind.isLocal, let path = item.subtitle {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable()
+            Image(nsImage: IconCache.icon(forFile: path)).resizable()
         } else {
             Image(systemName: item.kind.symbolName)
                 .resizable()
@@ -56,5 +56,19 @@ struct ResultRow: View {
                 .padding(2)
                 .foregroundStyle(item.kind.tint)
         }
+    }
+}
+
+// Finder icons, looked up once per path. Each lookup asks the system (on the
+// main thread), and the panel redraws its rows on every keystroke.
+@MainActor
+enum IconCache {
+    private static let cache = NSCache<NSString, NSImage>()
+
+    static func icon(forFile path: String) -> NSImage {
+        if let cached = cache.object(forKey: path as NSString) { return cached }
+        let icon = NSWorkspace.shared.icon(forFile: path)
+        cache.setObject(icon, forKey: path as NSString)
+        return icon
     }
 }

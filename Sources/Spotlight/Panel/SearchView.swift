@@ -17,6 +17,9 @@ struct ResultSection: Identifiable {
         static let calendar = Group(title: "Calendar", kinds: [.event], limit: 3)
         static let drive = Group(title: "Drive", kinds: [.driveFile], limit: 3)
         static let files = Group(title: "Files & Folders", kinds: [.file, .folder], limit: 4)
+
+        // Top to bottom.
+        static let all = [apps, mail, calendar, drive, files]
     }
 
     // Drops empty sections, then trims rows until everything fits in `maxRows`:
@@ -52,11 +55,6 @@ struct SearchView: View {
     // How many result rows fit in the panel.
     static let maxRows = 10
 
-    private func search(_ group: ResultSection.Group) async -> ResultSection {
-        let items = (try? await engine.search(SearchQuery(text: query, limit: group.limit, kinds: group.kinds))) ?? []
-        return ResultSection(title: group.title, items: items)
-    }
-
     // Every row in on-screen order, so arrow keys can move across sections.
     private var allItems: [SearchResult] { sections.flatMap(\.items) }
 
@@ -80,17 +78,24 @@ struct SearchView: View {
         // Runs whenever `query` changes. SwiftUI cancels the previous run first,
         // so a slow search for "sa" can't overwrite the results for "saf".
         .task(id: query) {
-            // `async let` starts every section's search at once instead of one
-            // after the other.
-            async let apps = search(.apps)
-            async let mail = search(.mail)
-            async let events = search(.calendar)
-            async let drive = search(.drive)
-            async let files = search(.files)
-            let found = ResultSection.fitting(
-                [await apps, await mail, await events, await drive, await files], maxRows: Self.maxRows)
+            // Wait a moment first: if another key arrives within 40 ms, SwiftUI
+            // cancels this task and starts a new one, so we never search for
+            // text you've already typed past.
+            try? await Task.sleep(for: .milliseconds(40))
             guard !Task.isCancelled else { return }
-            sections = found
+
+            // Every section in one call, so the engine ranks the matches once.
+            let groups = ResultSection.Group.all
+            let started = ContinuousClock.now
+            let results = (try? await engine.search(groups.map {
+                SearchQuery(text: query, limit: $0.limit, kinds: $0.kinds)
+            })) ?? []
+            guard !Task.isCancelled else { return }
+            let elapsed = ContinuousClock.now - started
+            if elapsed > .milliseconds(50) { NSLog("Slow search \"\(query)\": \(elapsed)") }
+
+            sections = ResultSection.fitting(
+                zip(groups, results).map { ResultSection(title: $0.title, items: $1) }, maxRows: Self.maxRows)
         }
         .onAppear { isFocused = true }
         // The window may not be key yet at onAppear, so focus again once it is.

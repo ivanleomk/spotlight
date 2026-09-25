@@ -43,6 +43,7 @@ actor SQLiteSearchEngine: SearchEngine {
         db = try SQLiteConnection(path: path)
         try db.execute("PRAGMA foreign_keys = ON")  // off by default in SQLite!
         try db.execute("PRAGMA journal_mode = WAL")  // faster writes, readers don't block
+        try db.execute("PRAGMA busy_timeout = 1000")  // wait briefly instead of failing if locked
         try Self.migrate(db)
     }
 
@@ -260,52 +261,10 @@ actor SQLiteSearchEngine: SearchEngine {
     // MARK: - Searching
 
     func search(_ query: SearchQuery) async throws -> [SearchResult] {
-        guard let match = SearchText.matchExpression(from: query.text) else { return [] }
+        try Self.runSearch([query], on: db, now: now()).first ?? []
+    }
 
-        // One `?` per kind, e.g. "AND d.kind IN (?, ?)". Only the placeholders go
-        // into the SQL text; the values themselves are still bound safely.
-        var kindFilter = ""
-        var params: [SQLiteValue] = [.text(match)]
-        if !query.kinds.isEmpty {
-            kindFilter = "AND d.kind IN (" + query.kinds.map { _ in "?" }.joined(separator: ", ") + ")"
-            params += query.kinds.map { .text($0.rawValue) }
-        }
-        // BM25 picks the best text matches, then Ranking reorders them by how
-        // recent they are. Fetching several times the limit gives the reordering
-        // room to promote a slightly weaker but much more recent match.
-        params.append(.int(Int64(query.limit * Ranking.candidateMultiplier)))
-
-        var results: [SearchResult] = []
-        try db.query(
-            """
-            -- char(2) and char(3) are MatchMarker.start and .end.
-            SELECT d.id, d.name, d.path, d.kind, -bm25(documents_fts, 10.0, 2.0, 1.0),
-                   highlight(documents_fts, 0, char(2), char(3)),
-                   snippet(documents_fts, 2, char(2), char(3), '…', 12),
-                   d.detail, d.modified_at
-            FROM documents_fts JOIN documents d ON d.id = documents_fts.rowid
-            WHERE documents_fts MATCH ? \(kindFilter)
-            ORDER BY bm25(documents_fts, 10.0, 2.0, 1.0)
-            LIMIT ?
-            """,
-            params
-        ) { row in
-            // highlight() returns the name with matches wrapped in MatchMarkers;
-            // snippet() does the same for a short excerpt of the content. A snippet
-            // is only worth showing when the match is in the content and not
-            // already visible in the name.
-            let nameMatched = row.string(5).contains(MatchMarker.start)
-            let snippet = row.string(6)
-            let detail = row.string(7)
-            let modified = row.double(8)
-            results.append(
-                SearchResult(
-                    id: String(row.int(0)), title: row.string(1), subtitle: row.string(2),
-                    kind: DocumentKind(rawValue: row.string(3)) ?? .file, score: row.double(4),
-                    detail: detail.isEmpty ? nil : detail,
-                    date: modified > 0 ? Date(timeIntervalSince1970: modified) : nil,
-                    snippet: !nameMatched && snippet.contains(MatchMarker.start) ? snippet : nil))
-        }
-        return Array(Ranking.rerank(results, now: now()).prefix(query.limit))
+    func search(_ queries: [SearchQuery]) async throws -> [[SearchResult]] {
+        try Self.runSearch(queries, on: db, now: now())
     }
 }

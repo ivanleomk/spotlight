@@ -11,13 +11,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // `Spotlight --bench t tr trip`: time the panel's search on the real index, then quit.
+        if let flag = CommandLine.arguments.firstIndex(of: "--bench") {
+            let queries = Array(CommandLine.arguments[(flag + 1)...])
+            Task.detached {
+                await Benchmark.run(queries)
+                exit(0)
+            }
+            return
+        }
+
         // No Dock icon, no menu bar: a background app.
         NSApp.setActivationPolicy(.accessory)
 
         let engine: SQLiteSearchEngine
+        let reader: SearchReader
         do {
-            // The one place that decides which engine the app uses.
-            engine = try SQLiteSearchEngine(path: SQLiteSearchEngine.defaultDatabasePath())
+            // The one place that decides which engine the app uses. The engine
+            // writes (syncing, logging); the reader answers the search panel on
+            // its own connection, so syncing never slows typing down.
+            let path = try SQLiteSearchEngine.defaultDatabasePath()
+            engine = try SQLiteSearchEngine(path: path)
+            reader = try SearchReader(path: path)
         } catch {
             NSLog("Could not open the search index: \(error)")
             NSApp.terminate(nil)
@@ -33,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // [weak self]: the panel keeps this closure, and the closure would otherwise
         // keep us alive in return (a "retain cycle").
         panel = SearchPanel(
-            engine: engine,
+            engine: reader,
             openSettings: { [weak self] in self?.showSettings() },
             // Logged in the background, so opening the result is never delayed.
             recordSelection: { query, shown, chosen in
