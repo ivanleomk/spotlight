@@ -114,16 +114,26 @@ actor SQLiteSearchEngine: SearchEngine {
     func search(_ query: SearchQuery) async throws -> [SearchResult] {
         guard let match = Self.matchExpression(from: query.text) else { return [] }
 
+        // One `?` per kind, e.g. "AND d.kind IN (?, ?)". Only the placeholders go
+        // into the SQL text; the values themselves are still bound safely.
+        var kindFilter = ""
+        var params: [SQLiteValue] = [.text(match)]
+        if !query.kinds.isEmpty {
+            kindFilter = "AND d.kind IN (" + query.kinds.map { _ in "?" }.joined(separator: ", ") + ")"
+            params += query.kinds.map { .text($0.rawValue) }
+        }
+        params.append(.int(Int64(query.limit)))
+
         var results: [SearchResult] = []
         try db.query(
             """
             SELECT d.id, d.name, d.path, d.kind, -bm25(documents_fts, 10.0, 2.0, 1.0)
             FROM documents_fts JOIN documents d ON d.id = documents_fts.rowid
-            WHERE documents_fts MATCH ?
+            WHERE documents_fts MATCH ? \(kindFilter)
             ORDER BY bm25(documents_fts, 10.0, 2.0, 1.0)
             LIMIT ?
             """,
-            [.text(match), .int(Int64(query.limit))]
+            params
         ) { row in
             results.append(
                 SearchResult(

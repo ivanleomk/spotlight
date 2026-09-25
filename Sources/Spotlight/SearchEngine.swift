@@ -5,6 +5,8 @@ import Foundation
 struct SearchQuery: Sendable {
     var text: String
     var limit: Int = 20
+    // Only return these kinds. Empty means "any kind".
+    var kinds: [DocumentKind] = []
 }
 
 // What sort of thing an indexed item is. An enum is a type with a fixed set of

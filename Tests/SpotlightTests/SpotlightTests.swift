@@ -167,3 +167,17 @@ import Testing
         #expect(try await hits(engine, "panel") == ["SearchPanel.swift (file)"])
     }
 }
+
+@Suite struct KindFilterTests {
+    @Test func onlyReturnsRequestedKinds() async throws {
+        let engine = try SQLiteSearchEngine(path: ":memory:")
+        try await engine.upsert(path: "/Applications/Safari.app", name: "Safari", kind: .app)
+        try await engine.upsert(path: "/docs/safari-notes.md", name: "safari-notes.md")
+
+        let apps = try await engine.search(SearchQuery(text: "saf", kinds: [.app]))
+        let files = try await engine.search(SearchQuery(text: "saf", kinds: [.file, .folder]))
+
+        #expect(apps.map(\.title) == ["Safari"])
+        #expect(files.map(\.title) == ["safari-notes.md"])
+    }
+}
