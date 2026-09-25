@@ -8,6 +8,21 @@ struct IndexedFile: Sendable {
     var size: Int64 = 0
     var modifiedAt: Double = 0
     var content: String = ""
+    // The Source it came from (see Source.id).
+    var source: String = LocalFilesSource.sourceID
+}
+
+// What a source remembers between syncs.
+struct SyncState: Sendable, Equatable {
+    // The source's bookmark: Gmail's historyId, Drive's page token. Nil for
+    // sources that always look at everything (local files).
+    var cursor: String?
+    var syncedAt: Date
+}
+
+struct IndexStats: Sendable {
+    var itemCount = 0
+    var lastIndexed: Date?
 }
 
 // An `actor` is a class that protects its own data: only one caller at a time can
@@ -46,16 +61,18 @@ actor SQLiteSearchEngine: SearchEngine {
                 var id: Int64 = 0
                 try db.query(
                     """
-                    INSERT INTO documents(path, name, kind, size, modified_at, indexed_at)
-                    VALUES(?, ?, ?, ?, ?, ?)
+                    INSERT INTO documents(path, name, kind, size, modified_at, indexed_at, source)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(path) DO UPDATE SET
                         name = excluded.name, kind = excluded.kind, size = excluded.size,
-                        modified_at = excluded.modified_at, indexed_at = excluded.indexed_at
+                        modified_at = excluded.modified_at, indexed_at = excluded.indexed_at,
+                        source = excluded.source
                     RETURNING id
                     """,
                     [
                         .text(file.path), .text(file.name), .text(file.kind.rawValue),
                         .int(file.size), .double(file.modifiedAt), .double(indexedAt),
+                        .text(file.source),
                     ]
                 ) { id = $0.int(0) }
 
@@ -65,8 +82,8 @@ actor SQLiteSearchEngine: SearchEngine {
                 try db.query(
                     "INSERT INTO documents_fts(rowid, name, path, content) VALUES(?, ?, ?, ?)",
                     [
-                        .int(id), .text(Self.searchable(file.name)),
-                        .text(Self.searchable(file.path)), .text(file.content),
+                        .int(id), .text(SearchText.indexable(file.name)),
+                        .text(SearchText.indexable(file.path)), .text(file.content),
                     ])
             }
         }
@@ -89,6 +106,62 @@ actor SQLiteSearchEngine: SearchEngine {
             try db.query("DELETE FROM documents_fts WHERE rowid IN (SELECT id FROM documents WHERE \(stale))", params)
             try db.query("DELETE FROM documents WHERE \(stale)", params)
         }
+    }
+
+    // Forgets everything one source added, e.g. when you disconnect an account.
+    func removeAll(from source: String) throws {
+        try inTransaction {
+            try db.query(
+                "DELETE FROM documents_fts WHERE rowid IN (SELECT id FROM documents WHERE source = ?)",
+                [.text(source)])
+            try db.query("DELETE FROM documents WHERE source = ?", [.text(source)])
+            try db.query("DELETE FROM sync_state WHERE source = ?", [.text(source)])
+        }
+    }
+
+    // MARK: - Sync state
+
+    // Where `source` got up to last time, or nil if it has never synced.
+    func syncState(for source: String) throws -> SyncState? {
+        var state: SyncState?
+        try db.query("SELECT cursor, synced_at FROM sync_state WHERE source = ?", [.text(source)]) { row in
+            // A NULL cursor comes back as "", which means "no cursor".
+            let cursor = row.string(0)
+            state = SyncState(
+                cursor: cursor.isEmpty ? nil : cursor,
+                syncedAt: Date(timeIntervalSince1970: row.double(1)))
+        }
+        return state
+    }
+
+    func saveSyncState(_ state: SyncState, for source: String) throws {
+        try db.query(
+            """
+            INSERT INTO sync_state(source, cursor, synced_at) VALUES(?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET cursor = excluded.cursor, synced_at = excluded.synced_at
+            """,
+            [.text(source), .text(state.cursor ?? ""), .double(state.syncedAt.timeIntervalSince1970)])
+    }
+
+    // MARK: - Stats
+
+    // Numbers for the Settings page.
+    func stats() throws -> IndexStats {
+        var stats = IndexStats()
+        try db.query("SELECT count(*), max(indexed_at) FROM documents") { row in
+            stats.itemCount = Int(row.int(0))
+            let last = row.double(1)
+            stats.lastIndexed = last > 0 ? Date(timeIntervalSince1970: last) : nil
+        }
+        return stats
+    }
+
+    // How many items are indexed inside folder `root`.
+    func count(under root: String) throws -> Int {
+        let (under, params) = Self.pathIsUnder(root)
+        var count = 0
+        try db.query("SELECT count(*) FROM documents WHERE \(under)", params) { count = Int($0.int(0)) }
+        return count
     }
 
     // Path -> modification date for everything already indexed under `root`.
@@ -139,7 +212,7 @@ actor SQLiteSearchEngine: SearchEngine {
     // MARK: - Searching
 
     func search(_ query: SearchQuery) async throws -> [SearchResult] {
-        guard let match = Self.matchExpression(from: query.text) else { return [] }
+        guard let match = SearchText.matchExpression(from: query.text) else { return [] }
 
         // One `?` per kind, e.g. "AND d.kind IN (?, ?)". Only the placeholders go
         // into the SQL text; the values themselves are still bound safely.
@@ -154,6 +227,7 @@ actor SQLiteSearchEngine: SearchEngine {
         var results: [SearchResult] = []
         try db.query(
             """
+            -- char(2) and char(3) are MatchMarker.start and .end.
             SELECT d.id, d.name, d.path, d.kind, -bm25(documents_fts, 10.0, 2.0, 1.0),
                    highlight(documents_fts, 0, char(2), char(3)),
                    snippet(documents_fts, 2, char(2), char(3), '…', 12)
@@ -164,108 +238,18 @@ actor SQLiteSearchEngine: SearchEngine {
             """,
             params
         ) { row in
-            // highlight() returns the name with matches wrapped in the invisible
-            // characters \u{2}...\u{3}; snippet() does the same for a short excerpt
-            // of the content. A snippet is only worth showing when the match is in
-            // the content and not already visible in the name.
-            let nameMatched = row.string(5).contains("\u{2}")
+            // highlight() returns the name with matches wrapped in MatchMarkers;
+            // snippet() does the same for a short excerpt of the content. A snippet
+            // is only worth showing when the match is in the content and not
+            // already visible in the name.
+            let nameMatched = row.string(5).contains(MatchMarker.start)
             let snippet = row.string(6)
             results.append(
                 SearchResult(
                     id: String(row.int(0)), title: row.string(1), subtitle: row.string(2),
                     kind: DocumentKind(rawValue: row.string(3)) ?? .file, score: row.double(4),
-                    snippet: !nameMatched && snippet.contains("\u{2}") ? snippet : nil))
+                    snippet: !nameMatched && snippet.contains(MatchMarker.start) ? snippet : nil))
         }
         return results
     }
-
-    // Turns what the user typed into a safe FTS5 query: "note app" -> "note"* "app"*
-    // Raw input could contain characters FTS5 treats as syntax (quotes, -, :), so we
-    // keep only letters and digits, quote each word, and add * so the last word can
-    // still be half-typed.
-    static func matchExpression(from text: String) -> String? {
-        let words = text.split { !$0.isLetter && !$0.isNumber }
-        guard !words.isEmpty else { return nil }
-        return words.map { "\"\($0)\"*" }.joined(separator: " ")
-    }
-
-    // The index splits words at punctuation ("my-notes.md" -> my, notes, md) but not
-    // at camelCase, so "SearchPanel" would be one word and a search for "panel" would
-    // miss it. We add a split copy: "SearchPanel" -> "SearchPanel Search Panel".
-    static func searchable(_ text: String) -> String {
-        var split = ""
-        var previous: Character?
-        for character in text {
-            if let previous, character.isUppercase, previous.isLowercase || previous.isNumber {
-                split.append(" ")
-            }
-            split.append(character)
-            previous = character
-        }
-        return split == text ? text : text + " " + split
-    }
-
-    // MARK: - Schema
-
-    // Bump this when the schema changes. SQLite keeps the number in the file itself
-    // (PRAGMA user_version), so we can tell which version an existing database is.
-    private static let schemaVersion = 4
-
-    private static func migrate(_ db: SQLiteConnection) throws {
-        var version: Int64 = 0
-        try db.query("PRAGMA user_version") { version = $0.int(0) }
-
-        if version < schemaVersion {
-            // Old databases only held a throwaway index, so we rebuild from scratch.
-            // (v3: file contents are indexed. v4: but not inside /Applications.)
-            // Once `searches` holds real history, future migrations must ALTER the
-            // tables instead of dropping them.
-            try db.execute(
-                """
-                DROP TABLE IF EXISTS search_results;
-                DROP TABLE IF EXISTS searches;
-                DROP TABLE IF EXISTS documents_fts;
-                DROP TABLE IF EXISTS documents;
-                """)
-            // Dropping tables frees the space inside the file but doesn't shrink the
-            // file; VACUUM rewrites it at its real size.
-            try db.execute("VACUUM")
-        }
-        try db.execute(schema)
-        try db.execute("PRAGMA user_version = \(schemaVersion)")
-    }
-
-    private static let schema = """
-        CREATE TABLE IF NOT EXISTS documents (
-          id          INTEGER PRIMARY KEY,
-          path        TEXT NOT NULL UNIQUE,
-          name        TEXT NOT NULL,
-          kind        TEXT NOT NULL DEFAULT 'file',
-          size        INTEGER,
-          modified_at REAL,
-          indexed_at  REAL NOT NULL DEFAULT 0
-        );
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-          name, path, content,
-          tokenize = 'unicode61 remove_diacritics 2'
-        );
-
-        CREATE TABLE IF NOT EXISTS searches (
-          id      INTEGER PRIMARY KEY,
-          query   TEXT NOT NULL,
-          ranker  TEXT NOT NULL,
-          at      REAL NOT NULL,
-          outcome TEXT NOT NULL CHECK (outcome IN ('selected', 'dismissed'))
-        );
-
-        CREATE TABLE IF NOT EXISTS search_results (
-          search_id   INTEGER NOT NULL REFERENCES searches(id)  ON DELETE CASCADE,
-          document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-          position    INTEGER NOT NULL,
-          score       REAL,
-          chosen      INTEGER NOT NULL DEFAULT 0,
-          PRIMARY KEY (search_id, position)
-        );
-        """
 }

@@ -50,13 +50,20 @@ make clean     # delete build output
 
 ## Layout
 
-- `Package.swift`: project manifest (name, macOS version, targets)
-- `Sources/Spotlight/Spotlight.swift`: app entry point; starts the crawl
-- `Sources/Spotlight/HotKey.swift`: global shortcut via Carbon
-- `Sources/Spotlight/SearchPanel.swift`: floating panel and SwiftUI results UI
-- `Sources/Spotlight/SearchEngine.swift`: the search contract (query, result, kinds)
-- `Sources/Spotlight/SQLiteSearchEngine.swift`: FTS5 index, BM25 ranking, snippets
-- `Sources/Spotlight/SQLite.swift`: small wrapper around the SQLite C API
-- `Sources/Spotlight/FileCrawler.swift`: walks folders and keeps the index current
-- `Sources/Spotlight/ContentExtractor.swift`: pulls text out of files and PDFs
-- `scripts/package.sh`: builds, signs and zips `Spotlight.app` for a release
+```
+Sources/Spotlight/
+  App/        SpotlightApp (entry point), AppDelegate (startup), HotKey (Cmd+Space),
+              SettingsWindow (the Settings window)
+  Search/     SearchEngine (the contract the UI uses), SQLiteSearchEngine (FTS5 index,
+              BM25 ranking, snippets), +Schema (tables and upgrades), SearchText
+              (query sanitizing, camelCase splitting), SQLite (C API wrapper)
+  Indexing/   FileCrawler (walks folders, keeps the index current), ContentExtractor
+              (text from files and PDFs), IndexedFolder (what gets crawled)
+  Panel/      SearchPanel (floating window), SearchView, ResultRow, PanelStyle
+  Settings/   SettingsView (sidebar), GeneralPage, SourcesPage, SettingsComponents
+  Shared/     Formatting (labels, ~ paths, bold matches), WindowPlacement (centering)
+
+Tests/SpotlightTests/   one file per area above, plus TestHelpers
+```
+
+`scripts/package.sh` builds, signs and zips `Spotlight.app` for a release.

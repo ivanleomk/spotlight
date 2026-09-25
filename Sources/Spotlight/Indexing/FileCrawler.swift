@@ -2,20 +2,24 @@ import Foundation
 
 // Walks folders on disk and feeds what it finds into the search index.
 struct FileCrawler: Sendable {
+    // Folders whose files are indexed by name and content.
     let roots: [URL]
+    // Folders whose files are indexed by name only (apps, cloud drives).
+    var nameOnlyRoots: [URL] = []
 
     // Folders we never descend into: huge, generated, and never what you're searching for.
     private static let skippedNames: Set<String> = [
         "node_modules", ".build", "DerivedData", "__pycache__", "venv", ".venv", "Pods", ".Trash",
     ]
 
-    static var defaultRoots: [URL] {
+    // What gets indexed until you change it in Settings.
+    static var defaultFolders: [URL] {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return [
             home.appendingPathComponent("Documents"),
             home.appendingPathComponent("Desktop"),
             home.appendingPathComponent("Downloads"),
-        ] + applicationRoots
+        ]
     }
 
     // Indexed by name only: what's inside apps and SDKs installed here (like
@@ -40,7 +44,7 @@ struct FileCrawler: Sendable {
         var total = 0
         var read = 0
 
-        for root in roots {
+        for root in roots + nameOnlyRoots {
             guard
                 let enumerator = FileManager.default.enumerator(
                     at: root, includingPropertiesForKeys: keys,
@@ -60,7 +64,7 @@ struct FileCrawler: Sendable {
 
             var batch: [IndexedFile] = []
             var unchanged: [String] = []
-            let readsContent = !Self.applicationRoots.contains(root)
+            let readsContent = !nameOnlyRoots.contains(root)
 
             // nextObject() rather than a `for` loop: Swift forbids iterating a
             // DirectoryEnumerator with `for` inside async code.
