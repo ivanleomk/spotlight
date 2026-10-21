@@ -32,24 +32,6 @@ cp "$BIN" "$APP/Contents/MacOS/Spotlight"
 cp Support/Info.plist "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key><string>com.ivanleomk.spotlight</string>
-    <key>CFBundleName</key><string>Spotlight</string>
-    <key>CFBundleExecutable</key><string>Spotlight</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
-    <key>LSUIElement</key><true/>
-    <key>NSDocumentsFolderUsageDescription</key><string>Spotlight indexes your Documents so you can search them.</string>
-    <key>NSDesktopFolderUsageDescription</key><string>Spotlight indexes your Desktop so you can search it.</string>
-    <key>NSDownloadsFolderUsageDescription</key><string>Spotlight indexes your Downloads so you can search them.</string>
-</dict>
-</plist>
-PLIST
 
 IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | grep -m1 -o '"Developer ID Application[^"]*"' | tr -d '"' || true)}"
 if [ -n "$IDENTITY" ]; then
